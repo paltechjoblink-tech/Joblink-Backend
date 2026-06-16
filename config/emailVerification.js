@@ -1,5 +1,4 @@
-const nodemailer = require('nodemailer');
-const sgTransport = require('nodemailer-sendgrid-transport');
+const sgMail = require('@sendgrid/mail');
 const fs = require('fs');
 const path = require('path');
 
@@ -100,9 +99,8 @@ const sendVerificationCode = async (email) => {
   try {
     console.log(`📧 Sending verification code to ${email}...`);
     
-    // Debug: Check if env vars are loaded
-    console.log(`🔍 GMAIL_SEND_EMAIL: ${process.env.GMAIL_SEND_EMAIL ? '✅ SET' : '❌ NOT SET'}`);
-    console.log(`🔍 GMAIL_SEND_PASSWORD: ${process.env.GMAIL_SEND_PASSWORD ? '✅ SET' : '❌ NOT SET'}`);
+    // Check if SendGrid API key is loaded
+    console.log(`🔍 SENDGRID_API_KEY: ${process.env.SENDGRID_API_KEY ? '✅ SET' : '❌ NOT SET'}`);
 
     // Check if email is valid format first - allow +, -, ., _ and numbers
     const emailRegex = /^[a-z0-9._+\-]+@gmail\.com$/i;
@@ -124,89 +122,56 @@ const sendVerificationCode = async (email) => {
       attempts: 0
     });
 
-    // Verify credentials exist before creating transporter
-    if (!process.env.GMAIL_SEND_EMAIL || !process.env.GMAIL_SEND_PASSWORD) {
-      console.error('❌ CRITICAL: Gmail credentials missing from .env file');
+    // Verify SendGrid API key exists
+    if (!process.env.SENDGRID_API_KEY) {
+      console.error('❌ CRITICAL: SendGrid API key missing from .env file');
       return {
         success: false,
-        message: 'Email service not configured. Missing GMAIL_SEND_EMAIL or GMAIL_SEND_PASSWORD in .env'
+        message: 'Email service not configured. Missing SENDGRID_API_KEY in .env'
       };
     }
 
-    // Create transporter with SendGrid
-    const transporter = nodemailer.createTransport(sgTransport({
-      auth: {
-        api_key: process.env.SENDGRID_API_KEY
+    // Initialize SendGrid with API key
+    sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+
+    // Get email template
+    const emailTemplate = getEmailTemplate(code, email);
+    
+    // Send verification email using SendGrid
+    const msg = {
+      to: email,
+      from: 'noreply@joblink.app',
+      subject: 'Joblink Email Verification',
+      html: emailTemplate,
+      text: `Hello,\n\nYour Joblink email verification code is:\n\n${code}\n\nThis code is valid for 15 minutes and can only be used once.\n\nPlease don't share this code with anyone. Joblink support will never ask for your verification code.\n\nYou are receiving this email because a verification code was requested for you to be able to create Joblink account.\n\nIf you did not request this, ignore this email.\n\nBest regards,\nThe Joblink Team\n\n2026 Joblink. All rights reserved.`,
+      replyTo: 'support@joblink.app',
+      headers: {
+        'X-Priority': '3 (Normal)',
+        'X-MSMail-Priority': 'Normal',
+        'Importance': 'normal',
+        'X-Mailer': 'Joblink'
       }
-    }));
+    };
 
-    // Send verification email to REAL user email
-    try {
-      const emailTemplate = getEmailTemplate(code, email);
-      
-      // Wrap with timeout to prevent hanging
-      const sendWithTimeout = new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          reject(new Error('Email send timeout - took too long'));
-        }, 30000); // 30 second timeout (Gmail SMTP can be slow)
-        
-        transporter.sendMail({
-          from: 'noreply@joblink.app',
-          to: email,
-          subject: 'Joblink Email Verification',
-          html: emailTemplate,
-          text: `Hello,\n\nYour Joblink email verification code is:\n\n${code}\n\nThis code is valid for 15 minutes and can only be used once.\n\nPlease don't share this code with anyone. Joblink support will never ask for your verification code.\n\nYou are receiving this email because a verification code was requested for you to be able to create Joblink account.\n\nIf you did not request this, ignore this email.\n\nBest regards,\nThe Joblink Team\n\n2026 Joblink. All rights reserved.`,
-          encoding: 'utf-8',
-          headers: {
-            'X-Priority': '3 (Normal)',
-            'X-MSMail-Priority': 'Normal',
-            'Importance': 'normal',
-            'X-Mailer': 'Joblink',
-            'Reply-To': process.env.GMAIL_SEND_EMAIL,
-            'List-Unsubscribe': '<mailto:support@joblink.com?subject=unsubscribe>',
-            'List-Id': 'Joblink <joblink.support@gmail.com>'
-          }
-        }, (err, info) => {
-          clearTimeout(timeout);
-          if (err) {
-            reject(err);
-          } else {
-            resolve(info);
-          }
-        });
-      });
-      
-      await sendWithTimeout;
+    await sgMail.send(msg);
 
-      console.log(`✅ Verification code sent successfully to ${email}`);
-      return {
-        success: true,
-        message: 'Verification code sent to your email',
-        expiresIn: '15 minutes',
-        sentTo: email
-      };
+    console.log(`✅ Verification code sent successfully to ${email}`);
+    return {
+      success: true,
+      message: 'Verification code sent to your email',
+      expiresIn: '15 minutes',
+      sentTo: email
+    };
 
-    } catch (emailError) {
-      console.error(`❌ Email sending failed:`, emailError.message);
-      console.error(`🔍 Full error details:`, JSON.stringify(emailError, null, 2));
-      console.error(`🔍 Error code:`, emailError.code);
-      console.error(`🔍 Response:`, emailError.response);
-      
-      // Return detailed error for debugging
-      return {
-        success: false,
-        message: 'Failed to send email. Please check SMTP settings.',
-        error: emailError.message,
-        errorCode: emailError.code,
-        hint: 'Ensure Gmail App Password is correctly set in environment variables.'
-      };
-    }
-
-  } catch (error) {
-    console.error('❌ Error in sendVerificationCode:', error);
+  } catch (emailError) {
+    console.error(`❌ Email sending failed:`, emailError.message);
+    console.error(`🔍 Full error details:`, JSON.stringify(emailError, null, 2));
+    
+    // Return detailed error for debugging
     return {
       success: false,
-      message: 'Failed to send verification code: ' + error.message
+      message: 'Failed to send email. Please try again later.',
+      error: emailError.message
     };
   }
 };
