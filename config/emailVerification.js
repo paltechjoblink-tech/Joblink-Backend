@@ -145,29 +145,45 @@ const sendVerificationCode = async (email) => {
     try {
       const emailTemplate = getEmailTemplate(code, email);
       
-      await transporter.sendMail({
-        from: `Joblink <${process.env.GMAIL_SEND_EMAIL}>`,
-        to: email,
-        subject: 'Joblink Email Verification',
-        html: emailTemplate,
-        text: `Hello,\n\nYour Joblink email verification code is:\n\n${code}\n\nThis code is valid for 15 minutes and can only be used once.\n\nPlease don't share this code with anyone. Joblink support will never ask for your verification code.\n\nYou are receiving this email because a verification code was requested for you to be able to create Joblink account.\n\nIf you did not request this, ignore this email.\n\nBest regards,\nThe Joblink Team\n\n2026 Joblink. All rights reserved.`,
-        encoding: 'utf-8',
-        headers: {
-          'X-Priority': '3 (Normal)',
-          'X-MSMail-Priority': 'Normal',
-          'Importance': 'normal',
-          'X-Mailer': 'Joblink',
-          'Reply-To': process.env.GMAIL_SEND_EMAIL,
-          'List-Unsubscribe': '<mailto:support@joblink.com?subject=unsubscribe>',
-          'List-Id': 'Joblink <joblink.support@gmail.com>'
-        }
+      // Wrap with timeout to prevent hanging
+      const sendWithTimeout = new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Email send timeout - took too long'));
+        }, 10000); // 10 second timeout
+        
+        transporter.sendMail({
+          from: `Joblink <${process.env.GMAIL_SEND_EMAIL}>`,
+          to: email,
+          subject: 'Joblink Email Verification',
+          html: emailTemplate,
+          text: `Hello,\n\nYour Joblink email verification code is:\n\n${code}\n\nThis code is valid for 15 minutes and can only be used once.\n\nPlease don't share this code with anyone. Joblink support will never ask for your verification code.\n\nYou are receiving this email because a verification code was requested for you to be able to create Joblink account.\n\nIf you did not request this, ignore this email.\n\nBest regards,\nThe Joblink Team\n\n2026 Joblink. All rights reserved.`,
+          encoding: 'utf-8',
+          headers: {
+            'X-Priority': '3 (Normal)',
+            'X-MSMail-Priority': 'Normal',
+            'Importance': 'normal',
+            'X-Mailer': 'Joblink',
+            'Reply-To': process.env.GMAIL_SEND_EMAIL,
+            'List-Unsubscribe': '<mailto:support@joblink.com?subject=unsubscribe>',
+            'List-Id': 'Joblink <joblink.support@gmail.com>'
+          }
+        }, (err, info) => {
+          clearTimeout(timeout);
+          if (err) {
+            reject(err);
+          } else {
+            resolve(info);
+          }
+        });
       });
+      
+      await sendWithTimeout;
 
       console.log(`✅ Verification code sent successfully to ${email}`);
       return {
         success: true,
         message: 'Verification code sent to your email',
-        expiresIn: '10 minutes',
+        expiresIn: '15 minutes',
         sentTo: email
       };
 
