@@ -140,7 +140,7 @@ const sendVerificationCode = async (email) => {
     // Send verification email using SendGrid
     const msg = {
       to: email,
-      from: 'noreply@joblink.app',
+      from: 'paltechjoblink@gmail.com',
       subject: 'Joblink Email Verification',
       html: emailTemplate,
       text: `Hello,\n\nYour Joblink email verification code is:\n\n${code}\n\nThis code is valid for 15 minutes and can only be used once.\n\nPlease don't share this code with anyone. Joblink support will never ask for your verification code.\n\nYou are receiving this email because a verification code was requested for you to be able to create Joblink account.\n\nIf you did not request this, ignore this email.\n\nBest regards,\nThe Joblink Team\n\n2026 Joblink. All rights reserved.`,
