@@ -4,6 +4,43 @@ const { verifyGoogleEmail, sendVerificationCode, verifyCode } = require('../conf
 const { createClient } = require('@supabase/supabase-js');
 const { OAuth2Client } = require('google-auth-library');
 
+const getSupabaseAdminClient = () => {
+  const supabaseUrl = process.env.SUPABASE_URL || 'https://cvsifkizrofmorvfmwmq.supabase.co';
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseServiceKey) {
+    throw new Error('Missing SUPABASE_SERVICE_ROLE_KEY environment variable');
+  }
+  return createClient(supabaseUrl, supabaseServiceKey);
+};
+
+const emailAlreadyRegistered = async (email) => {
+  const normalizedEmail = String(email).toLowerCase();
+  const supabaseAdmin = getSupabaseAdminClient();
+  if (!supabaseAdmin) return false;
+
+  const { data: userList, error: userListError } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 100 });
+  if (userListError) {
+    throw userListError;
+  }
+
+  const existingAuthUser = userList?.users?.find((user) => user.email?.toLowerCase() === normalizedEmail) || null;
+  if (existingAuthUser) {
+    return true;
+  }
+
+  const { data: existingProfile, error: profileError } = await supabaseAdmin
+    .from('profiles')
+    .select('id')
+    .eq('email', normalizedEmail)
+    .maybeSingle();
+
+  if (profileError) {
+    throw profileError;
+  }
+
+  return !!existingProfile;
+};
+
 /**
  * POST /api/auth/verify-google-email
  * Check if email format is valid and if already verified
@@ -15,18 +52,42 @@ router.post('/verify-google-email', async (req, res) => {
     if (!email) {
       return res.status(400).json({
         error: 'Email is required',
+        valid: false,
         exists: false,
+        alreadyRegistered: false,
         verified: false
       });
     }
 
+    const normalizedEmail = String(email).toLowerCase();
+
+    if (!normalizedEmail.endsWith('@gmail.com')) {
+      return res.json({
+        valid: false,
+        exists: false,
+        alreadyRegistered: false,
+        verified: false,
+        email,
+        message: 'Only Gmail addresses are allowed'
+      });
+    }
+
     const result = await verifyGoogleEmail(email);
-    return res.json(result);
+    return res.json({
+      ...result,
+      valid: result.exists === true,
+      exists: result.exists === true,
+      alreadyRegistered: false
+    });
 
   } catch (error) {
     console.error('Email verification error:', error);
     res.status(500).json({
       error: 'Email verification failed',
+      valid: false,
+      exists: false,
+      alreadyRegistered: false,
+      verified: false,
       message: error.message
     });
   }
@@ -59,12 +120,8 @@ router.post('/send-verification-code', async (req, res) => {
       });
     }
 
+    const normalizedEmail = String(email).toLowerCase();
     const result = await sendVerificationCode(email);
-    
-    if (!result.success) {
-      return res.status(400).json(result);
-    }
-
     return res.json(result);
 
   } catch (error) {
@@ -170,19 +227,16 @@ router.post('/google-signin', async (req, res) => {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     // Check if user exists
-    const { data: existingUser, error: queryError } = await supabase
-      .from('auth.users')
-      .select('id')
-      .eq('email', payload.email)
-      .maybeSingle();
-
-    if (queryError && queryError.code !== 'PGRST116') {
-      console.error('❌ Database query error:', queryError);
+    const { data: userList, error: userListError } = await supabase.auth.admin.listUsers({ page: 1, perPage: 100 });
+    if (userListError) {
+      console.error('❌ Database query error:', userListError);
       return res.status(500).json({
         error: 'Database error',
         message: 'Failed to check existing user'
       });
     }
+
+    const existingUser = userList?.users?.find((user) => user.email?.toLowerCase() === payload.email?.toLowerCase()) || null;
 
     // Create or sign in user via Supabase
     let user;

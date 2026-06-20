@@ -4,8 +4,8 @@
   "description": "Backend API for Joblink application",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "start": "set PORT=8080 && node server.js",
+    "dev": "set PORT=8080 && nodemon server.js"
   },
   "keywords": [
     "api",
