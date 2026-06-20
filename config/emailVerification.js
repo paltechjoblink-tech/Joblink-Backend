@@ -1,6 +1,9 @@
 const nodemailer = require('nodemailer');
+const sgMail = require('@sendgrid/mail');
 const fs = require('fs');
 const path = require('path');
+
+const EMAIL_VERIFICATION_METHOD = (process.env.EMAIL_VERIFICATION_METHOD || 'smtp').toLowerCase();
 
 /**
  * Get base64 encoded logo
@@ -98,10 +101,13 @@ a { text-decoration: none; color: inherit; }
 const sendVerificationCode = async (email) => {
   try {
     console.log(`📧 Sending verification code to ${email}...`);
-    
+    console.log(`🔍 EMAIL_VERIFICATION_METHOD: ${EMAIL_VERIFICATION_METHOD}`);
+
     // Debug: Check if env vars are loaded
     console.log(`🔍 GMAIL_SEND_EMAIL: ${process.env.GMAIL_SEND_EMAIL ? '✅ SET' : '❌ NOT SET'}`);
     console.log(`🔍 GMAIL_SEND_PASSWORD: ${process.env.GMAIL_SEND_PASSWORD ? '✅ SET' : '❌ NOT SET'}`);
+    console.log(`🔍 SENDGRID_API_KEY: ${process.env.SENDGRID_API_KEY ? '✅ SET' : '❌ NOT SET'}`);
+    console.log(`🔍 SENDGRID_FROM_EMAIL: ${process.env.SENDGRID_FROM_EMAIL ? '✅ SET' : '❌ NOT SET'}`);
 
     // Check if email is valid format first - allow +, -, ., _ and numbers
     const emailRegex = /^[a-z0-9._+\-]+@gmail\.com$/i;
@@ -123,7 +129,48 @@ const sendVerificationCode = async (email) => {
       attempts: 0
     });
 
-    // Verify credentials exist before creating transporter
+    const emailTemplate = getEmailTemplate(code, email);
+    const plainText = `Hello,\n\nYour Joblink email verification code is:\n\n${code}\n\nThis code is valid for 15 minutes and can only be used once.\n\nPlease don't share this code with anyone. Joblink support will never ask for your verification code.\n\nYou are receiving this email because a verification code was requested for you to be able to create Joblink account.\n\nIf you did not request this, ignore this email.\n\nBest regards,\nThe Joblink Team\n\n2026 Joblink. All rights reserved.`;
+    const fromEmail = process.env.SENDGRID_FROM_EMAIL || process.env.GMAIL_SEND_EMAIL || 'no-reply@joblink.com';
+
+    if (EMAIL_VERIFICATION_METHOD === 'sendgrid') {
+      if (!process.env.SENDGRID_API_KEY) {
+        console.error('❌ CRITICAL: SendGrid API key missing from .env file');
+        return {
+          success: false,
+          message: 'Email service not configured. Missing SENDGRID_API_KEY in .env'
+        };
+      }
+
+      sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+      const msg = {
+        to: email,
+        from: `Joblink <${fromEmail}>`,
+        subject: 'Joblink Email Verification',
+        html: emailTemplate,
+        text: plainText
+      };
+
+      try {
+        await sgMail.send(msg);
+        console.log(`✅ Verification code sent successfully via SendGrid to ${email}`);
+        return {
+          success: true,
+          message: 'Verification code sent to your email',
+          expiresIn: '10 minutes',
+          sentTo: email
+        };
+      } catch (sendGridError) {
+        console.error('❌ SendGrid email sending failed:', sendGridError);
+        return {
+          success: false,
+          message: 'Failed to send email via SendGrid. Please check API key and sender settings.',
+          error: sendGridError.message || String(sendGridError)
+        };
+      }
+    }
+
+    // Default to Gmail SMTP (smtp)
     if (!process.env.GMAIL_SEND_EMAIL || !process.env.GMAIL_SEND_PASSWORD) {
       console.error('❌ CRITICAL: Gmail credentials missing from .env file');
       return {
@@ -132,7 +179,6 @@ const sendVerificationCode = async (email) => {
       };
     }
 
-    // Create transporter with Gmail SMTP
     const transporter = nodemailer.createTransport({
       service: 'gmail',
       auth: {
@@ -141,16 +187,13 @@ const sendVerificationCode = async (email) => {
       }
     });
 
-    // Send verification email to REAL user email
     try {
-      const emailTemplate = getEmailTemplate(code, email);
-      
       await transporter.sendMail({
         from: `Joblink <${process.env.GMAIL_SEND_EMAIL}>`,
         to: email,
         subject: 'Joblink Email Verification',
         html: emailTemplate,
-        text: `Hello,\n\nYour Joblink email verification code is:\n\n${code}\n\nThis code is valid for 15 minutes and can only be used once.\n\nPlease don't share this code with anyone. Joblink support will never ask for your verification code.\n\nYou are receiving this email because a verification code was requested for you to be able to create Joblink account.\n\nIf you did not request this, ignore this email.\n\nBest regards,\nThe Joblink Team\n\n2026 Joblink. All rights reserved.`,
+        text: plainText,
         encoding: 'utf-8',
         headers: {
           'X-Priority': '3 (Normal)',
@@ -170,14 +213,12 @@ const sendVerificationCode = async (email) => {
         expiresIn: '10 minutes',
         sentTo: email
       };
-
     } catch (emailError) {
       console.error(`❌ Email sending failed:`, emailError.message);
       console.error(`🔍 Full error details:`, JSON.stringify(emailError, null, 2));
       console.error(`🔍 Error code:`, emailError.code);
       console.error(`🔍 Response:`, emailError.response);
       
-      // Return detailed error for debugging
       return {
         success: false,
         message: 'Failed to send email. Please check SMTP settings.',
@@ -186,7 +227,6 @@ const sendVerificationCode = async (email) => {
         hint: 'Ensure Gmail App Password is correctly set in environment variables.'
       };
     }
-
   } catch (error) {
     console.error('❌ Error in sendVerificationCode:', error);
     return {
