@@ -3,7 +3,24 @@ const sgMail = require('@sendgrid/mail');
 const fs = require('fs');
 const path = require('path');
 
-const EMAIL_VERIFICATION_METHOD = (process.env.EMAIL_VERIFICATION_METHOD || 'smtp').toLowerCase();
+const requestedEmailVerificationMethod = (process.env.EMAIL_VERIFICATION_METHOD || '').toLowerCase();
+const isSendGridConfigured = Boolean(process.env.SENDGRID_API_KEY);
+const isGmailConfigured = Boolean(process.env.GMAIL_SEND_EMAIL && process.env.GMAIL_SEND_PASSWORD);
+
+let EMAIL_VERIFICATION_METHOD = requestedEmailVerificationMethod;
+if (!EMAIL_VERIFICATION_METHOD) {
+  EMAIL_VERIFICATION_METHOD = isSendGridConfigured ? 'sendgrid' : 'smtp';
+}
+
+if (requestedEmailVerificationMethod === 'smtp' && !isGmailConfigured && isSendGridConfigured) {
+  console.warn('⚠️ SMTP requested but Gmail credentials are missing; falling back to SendGrid because SENDGRID_API_KEY is configured.');
+  EMAIL_VERIFICATION_METHOD = 'sendgrid';
+}
+
+if (requestedEmailVerificationMethod === 'sendgrid' && !isSendGridConfigured && isGmailConfigured) {
+  console.warn('⚠️ SendGrid requested but SENDGRID_API_KEY is missing; falling back to SMTP because Gmail credentials are configured.');
+  EMAIL_VERIFICATION_METHOD = 'smtp';
+}
 
 /**
  * Get base64 encoded logo
@@ -136,12 +153,19 @@ const sendVerificationCode = async (email) => {
     if (EMAIL_VERIFICATION_METHOD === 'sendgrid') {
       if (!process.env.SENDGRID_API_KEY) {
         console.error('❌ CRITICAL: SendGrid API key missing from .env file');
-        return {
-          success: false,
-          message: 'Email service not configured. Missing SENDGRID_API_KEY in .env'
-        };
+        if (isGmailConfigured) {
+          console.warn('⚠️ Falling back to Gmail SMTP because Gmail credentials are available.');
+          EMAIL_VERIFICATION_METHOD = 'smtp';
+        } else {
+          return {
+            success: false,
+            message: 'Email service not configured. Missing SENDGRID_API_KEY in .env'
+          };
+        }
       }
+    }
 
+    if (EMAIL_VERIFICATION_METHOD === 'sendgrid') {
       sgMail.setApiKey(process.env.SENDGRID_API_KEY);
       const msg = {
         to: email,
@@ -162,70 +186,76 @@ const sendVerificationCode = async (email) => {
         };
       } catch (sendGridError) {
         console.error('❌ SendGrid email sending failed:', sendGridError);
+        if (isGmailConfigured) {
+          console.warn('⚠️ SendGrid failed; falling back to Gmail SMTP because Gmail credentials are available.');
+          EMAIL_VERIFICATION_METHOD = 'smtp';
+        } else {
+          return {
+            success: false,
+            message: 'Failed to send email via SendGrid. Please check API key and sender settings.',
+            error: sendGridError.message || String(sendGridError)
+          };
+        }
+      }
+    }
+
+    if (EMAIL_VERIFICATION_METHOD === 'smtp') {
+      if (!process.env.GMAIL_SEND_EMAIL || !process.env.GMAIL_SEND_PASSWORD) {
+        console.error('❌ CRITICAL: Gmail credentials missing from .env file');
         return {
           success: false,
-          message: 'Failed to send email via SendGrid. Please check API key and sender settings.',
-          error: sendGridError.message || String(sendGridError)
+          message: 'Email service not configured. Missing GMAIL_SEND_EMAIL or GMAIL_SEND_PASSWORD in .env'
         };
       }
-    }
 
-    // Default to Gmail SMTP (smtp)
-    if (!process.env.GMAIL_SEND_EMAIL || !process.env.GMAIL_SEND_PASSWORD) {
-      console.error('❌ CRITICAL: Gmail credentials missing from .env file');
-      return {
-        success: false,
-        message: 'Email service not configured. Missing GMAIL_SEND_EMAIL or GMAIL_SEND_PASSWORD in .env'
-      };
-    }
-
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.GMAIL_SEND_EMAIL,
-        pass: process.env.GMAIL_SEND_PASSWORD
-      }
-    });
-
-    try {
-      await transporter.sendMail({
-        from: `Joblink <${process.env.GMAIL_SEND_EMAIL}>`,
-        to: email,
-        subject: 'Joblink Email Verification',
-        html: emailTemplate,
-        text: plainText,
-        encoding: 'utf-8',
-        headers: {
-          'X-Priority': '3 (Normal)',
-          'X-MSMail-Priority': 'Normal',
-          'Importance': 'normal',
-          'X-Mailer': 'Joblink',
-          'Reply-To': process.env.GMAIL_SEND_EMAIL,
-          'List-Unsubscribe': '<mailto:support@joblink.com?subject=unsubscribe>',
-          'List-Id': 'Joblink <joblink.support@gmail.com>'
+      const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+          user: process.env.GMAIL_SEND_EMAIL,
+          pass: process.env.GMAIL_SEND_PASSWORD
         }
       });
 
-      console.log(`✅ Verification code sent successfully to ${email}`);
-      return {
-        success: true,
-        message: 'Verification code sent to your email',
-        expiresIn: '10 minutes',
-        sentTo: email
-      };
-    } catch (emailError) {
-      console.error(`❌ Email sending failed:`, emailError.message);
-      console.error(`🔍 Full error details:`, JSON.stringify(emailError, null, 2));
-      console.error(`🔍 Error code:`, emailError.code);
-      console.error(`🔍 Response:`, emailError.response);
-      
-      return {
-        success: false,
-        message: 'Failed to send email. Please check SMTP settings.',
-        error: emailError.message,
-        errorCode: emailError.code,
-        hint: 'Ensure Gmail App Password is correctly set in environment variables.'
-      };
+      try {
+        await transporter.sendMail({
+          from: `Joblink <${process.env.GMAIL_SEND_EMAIL}>`,
+          to: email,
+          subject: 'Joblink Email Verification',
+          html: emailTemplate,
+          text: plainText,
+          encoding: 'utf-8',
+          headers: {
+            'X-Priority': '3 (Normal)',
+            'X-MSMail-Priority': 'Normal',
+            'Importance': 'normal',
+            'X-Mailer': 'Joblink',
+            'Reply-To': process.env.GMAIL_SEND_EMAIL,
+            'List-Unsubscribe': '<mailto:support@joblink.com?subject=unsubscribe>',
+            'List-Id': 'Joblink <joblink.support@gmail.com>'
+          }
+        });
+
+        console.log(`✅ Verification code sent successfully to ${email}`);
+        return {
+          success: true,
+          message: 'Verification code sent to your email',
+          expiresIn: '10 minutes',
+          sentTo: email
+        };
+      } catch (emailError) {
+        console.error(`❌ Email sending failed:`, emailError.message);
+        console.error(`🔍 Full error details:`, JSON.stringify(emailError, null, 2));
+        console.error(`🔍 Error code:`, emailError.code);
+        console.error(`🔍 Response:`, emailError.response);
+        
+        return {
+          success: false,
+          message: 'Failed to send email. Please check SMTP settings.',
+          error: emailError.message,
+          errorCode: emailError.code,
+          hint: 'Ensure Gmail App Password is correctly set in environment variables.'
+        };
+      }
     }
   } catch (error) {
     console.error('❌ Error in sendVerificationCode:', error);
