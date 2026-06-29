@@ -193,6 +193,15 @@ router.post('/google-signin', async (req, res) => {
 
     console.log('🔐 Verifying Google token for:', email);
 
+    const looksLikeJwt = (value) => typeof value === 'string' && value.split('.').length === 3 && value.length > 20;
+    if (!looksLikeJwt(token)) {
+      console.warn('⚠️ Refused invalid Google token format:', typeof token === 'string' ? token : 'non-string');
+      return res.status(400).json({
+        error: 'Invalid Google token format',
+        message: 'Google ID token must be a JWT token from Google.'
+      });
+    }
+
     // Verify Google token
     const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID || '541772603049-qame2cc6bub14oag2f6lbr9oe3i1q8sm.apps.googleusercontent.com');
     
@@ -282,14 +291,10 @@ router.post('/google-signin', async (req, res) => {
       user = userData.user;
     }
 
-    // Create a direct Supabase session for the authenticated user.
-    // This avoids the magic-link callback dependency that does not work reliably in the native app flow.
-    const { data: signInData, error: signInError } = await supabase.auth.admin.generateLink({
-      type: 'signup',
-      email: user.email,
-      options: {
-        redirectTo: process.env.REDIRECT_URL || 'http://localhost:3000/auth/callback',
-      }
+    // Create a direct Supabase session by exchanging the Google ID token.
+    const { data: signInData, error: signInError } = await supabase.auth.signInWithIdToken({
+      provider: 'google',
+      token,
     });
 
     if (signInError) {
@@ -300,21 +305,11 @@ router.post('/google-signin', async (req, res) => {
       });
     }
 
-    const link = signInData?.properties?.hashed_token ? null : signInData?.verification_link;
-    const hashPart = link ? new URL(link).hash.substring(1) : '';
-    const params = new URLSearchParams(hashPart);
-    const access_token = params.get('access_token');
-    const refresh_token = params.get('refresh_token');
-
-    if (!access_token || !refresh_token) {
-      console.warn('⚠️ Direct session link did not contain tokens; falling back to a user-level response');
-      return res.json({
-        user: {
-          id: user.id,
-          email: user.email,
-          user_metadata: user.user_metadata,
-        },
-        message: 'User authenticated but session creation pending'
+    if (!signInData?.session || !signInData?.user) {
+      console.error('❌ Invalid session response from Supabase:', signInData);
+      return res.status(500).json({
+        error: 'Session creation failed',
+        message: 'Invalid session response from Supabase'
       });
     }
 
@@ -322,15 +317,15 @@ router.post('/google-signin', async (req, res) => {
 
     res.json({
       user: {
-        id: user.id,
-        email: user.email,
-        user_metadata: user.user_metadata,
+        id: signInData.user.id,
+        email: signInData.user.email,
+        user_metadata: signInData.user.user_metadata,
       },
       session: {
-        access_token: access_token,
-        refresh_token: refresh_token,
-        token_type: 'bearer',
-        expires_in: 3600,
+        access_token: signInData.session.access_token,
+        refresh_token: signInData.session.refresh_token,
+        token_type: signInData.session.token_type,
+        expires_in: signInData.session.expires_in,
       },
       message: 'User signed in successfully'
     });
